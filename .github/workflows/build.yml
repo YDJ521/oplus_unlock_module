@@ -1,0 +1,153 @@
+name: Build Kernel Module
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm lld python3 git
+
+    - name: Clone kernel headers
+      run: |
+        git clone --depth 1 --filter=blob:none --sparse \
+          --branch oneplus/sm8750_b_16.0.0_oneplus_13 \
+          https://github.com/YDJ521/android_kernel_common_oneplus_sm8750.git \
+          kernel_src
+        cd kernel_src
+        git sparse-checkout set include arch/arm64/include
+        git config core.protectNTFS false
+        
+        mkdir -p include/generated
+        cat > include/generated/autoconf.h << 'EOH'
+        #ifndef _GENERATED_AUTOCONF_H
+        #define _GENERATED_AUTOCONF_H
+        #define CONFIG_64BIT 1
+        #define CONFIG_ARM64 1
+        #define CONFIG_SMP 1
+        #define CONFIG_PREEMPT 1
+        #define CONFIG_MODULES 1
+        #define CONFIG_MODULE_UNLOAD 1
+        #define CONFIG_MODVERSIONS 1
+        #define CONFIG_HAVE_ASM_MODVERSIONS 1
+        #define CONFIG_ASM_MODVERSIONS 1
+        #define CONFIG_CFI_CLANG 1
+        #define CONFIG_KPROBES 1
+        #define CONFIG_KPROBE_EVENTS 1
+        #define CONFIG_KRETPROBE_EVENTS 1
+        #define CONFIG_FTRACE 1
+        #define CONFIG_DYNAMIC_FTRACE 1
+        #define CONFIG_PRINTK 1
+        #define CONFIG_BUG 1
+        #define CONFIG_ELF_CORE 1
+        #define CONFIG_BASE_FULL 1
+        #define CONFIG_FUTEX 1
+        #define CONFIG_FUTEX_PI 1
+        #define CONFIG_EPOLL 1
+        #define CONFIG_SIGNALFD 1
+        #define CONFIG_TIMERFD 1
+        #define CONFIG_EVENTFD 1
+        #define CONFIG_AIO 1
+        #define CONFIG_KALLSYMS 1
+        #define CONFIG_KALLSYMS_ALL 1
+        #define CONFIG_PROC_FS 1
+        #define CONFIG_SYSFS 1
+        #define CONFIG_TMPFS 1
+        #define CONFIG_SHMEM 1
+        #define CONFIG_NET 1
+        #define CONFIG_INET 1
+        #define CONFIG_BPF 1
+        #define CONFIG_BPF_SYSCALL 1
+        #define CONFIG_CGROUPS 1
+        #define CONFIG_SECURITY 1
+        #define CONFIG_CRYPTO 1
+        #endif
+        EOH
+
+        cat > include/generated/utsrelease.h << 'EOH'
+        #define UTS_RELEASE "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+        EOH
+
+        mkdir -p arch/arm64/include/asm
+        cat > arch/arm64/include/asm/cpucaps.h << 'EOH'
+        #ifndef __ASM_CPUCAPS_H
+        #define __ASM_CPUCAPS_H
+        #define ARM64_CB_BIT(x) (x)
+        #endif
+        EOH
+
+        mkdir -p include/uapi/asm
+        cp -r include/uapi/asm-generic/* include/uapi/asm/ 2>/dev/null || true
+        cp -r arch/arm64/include/uapi/asm/* include/uapi/asm/ 2>/dev/null || true
+
+    - name: Build module
+      run: |
+        cd src
+        KHEADERS=../kernel_src
+        clang --target=aarch64-linux-gnu \
+          -std=gnu11 -O2 \
+          -D__KERNEL__ -DMODULE \
+          -fno-pic -fno-PIE -fno-common -fno-builtin \
+          -fasynchronous-unwind-tables \
+          -fno-delete-null-pointer-checks \
+          -ffixed-x18 \
+          -mbranch-protection=pac-ret \
+          -mgeneral-regs-only \
+          -mcmodel=large \
+          -fsanitize=kcfi \
+          -I${KHEADERS}/include \
+          -I${KHEADERS}/include/uapi \
+          -I${KHEADERS}/arch/arm64/include \
+          -I${KHEADERS}/arch/arm64/include/uapi \
+          -c oplus_unlock.c -o oplus_unlock.o
+
+        clang --target=aarch64-linux-gnu \
+          -std=gnu11 -O2 \
+          -D__KERNEL__ -DMODULE \
+          -fno-pic -fno-PIE -fno-common -fno-builtin \
+          -fasynchronous-unwind-tables \
+          -fno-delete-null-pointer-checks \
+          -ffixed-x18 \
+          -mbranch-protection=pac-ret \
+          -mgeneral-regs-only \
+          -mcmodel=large \
+          -fsanitize=kcfi \
+          -I${KHEADERS}/include \
+          -I${KHEADERS}/include/uapi \
+          -I${KHEADERS}/arch/arm64/include \
+          -I${KHEADERS}/arch/arm64/include/uapi \
+          -nostdlib -Wl,--build-id=none -shared \
+          -o oplus_unlock.ko oplus_unlock.o
+
+        echo "Build complete!"
+        llvm-readelf -p .modinfo oplus_unlock.ko | grep vermagic
+
+    - name: Package for KernelSU
+      run: |
+        mkdir -p package
+        cp src/oplus_unlock.ko package/
+        cp service.sh package/
+        cp module.prop package/
+        cp profile.conf package/
+        touch package/skip_mount
+        cd package
+        zip -r ../oplus_unlock-kernelsu.zip .
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: oplus_unlock-module
+        path: |
+          src/oplus_unlock.ko
+          oplus_unlock-kernelsu.zip
+        retention-days: 7
