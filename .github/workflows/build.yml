@@ -29,8 +29,6 @@ jobs:
     - name: Prepare kernel build
       working-directory: kernel_src
       run: |
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
         make gki_defconfig || make defconfig
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare -j$(nproc)
 
@@ -46,14 +44,10 @@ jobs:
           KBUILD_MODPOST_WARN=1 \
           M=$(pwd)/drivers/misc \
           modules -j$(nproc) 2>&1
+        cp drivers/misc/oplus_unlock.ko $GITHUB_WORKSPACE/oplus_unlock.ko
 
-    - name: Verify and package
+    - name: Package for KernelSU
       run: |
-        cd kernel_src
-        file drivers/misc/oplus_unlock.ko
-        llvm-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || true
-        cp drivers/misc/oplus_unlock.ko .
-        
         mkdir -p package
         cp oplus_unlock.ko package/
         cp service.sh package/
@@ -62,8 +56,6 @@ jobs:
         touch package/skip_mount
         cd package
         zip -r ../oplus_unlock-kernelsu.zip .
-        cd ..
-        sha256sum oplus_unlock-kernelsu.zip
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
