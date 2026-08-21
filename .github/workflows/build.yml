@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     
     steps:
     - name: Checkout
@@ -21,16 +21,19 @@ jobs:
 
     - name: Clone full kernel source
       run: |
-        git clone --depth 1 \
+        git clone \
           --branch oneplus/sm8750_b_16.0.0_oneplus_13 \
           https://github.com/YDJ521/android_kernel_common_oneplus_sm8750.git \
           kernel_src
 
-    - name: Prepare kernel headers
+    - name: Prepare kernel build
       working-directory: kernel_src
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
+        
+        echo "=== Available defconfigs ==="
+        find arch/arm64/configs -name '*defconfig' 2>/dev/null | head -20 || true
         
         if [ -f arch/arm64/configs/gki_defconfig ]; then
           make gki_defconfig
@@ -42,61 +45,67 @@ jobs:
         
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare -j$(nproc)
 
-    - name: Build module
+    - name: Verify kernel headers
+      working-directory: kernel_src
       run: |
-        cd src
-        KHEADERS=$(cd ../kernel_src && pwd)
+        echo "=== Checking critical headers ==="
+        ls -la arch/arm64/include/asm/cpucaps.h 2>/dev/null || echo "cpucaps.h NOT in source"
+        find arch/arm64 -name "cpucaps.h" 2>/dev/null || echo "cpucaps.h NOT found anywhere"
+        ls include/generated/autoconf.h 2>/dev/null || echo "autoconf.h missing"
+        ls include/generated/utsrelease.h 2>/dev/null || echo "utsrelease.h missing"
+        cat include/generated/utsrelease.h 2>/dev/null || true
+        cat .config | grep -E "KPROBES|CFI|MODVERSIONS" || true
+
+    - name: Build module via Kbuild
+      run: |
+        # Copy source files into kernel source tree
+        mkdir -p kernel_src/drivers/misc
+        cp src/oplus_unlock.c kernel_src/drivers/misc/oplus_unlock.c
         
-        clang --target=aarch64-linux-gnu \
-          -std=gnu11 -O2 \
-          -D__KERNEL__ -DMODULE \
-          -fno-pic -fno-PIE -fno-common -fno-builtin \
-          -fasynchronous-unwind-tables \
-          -fno-delete-null-pointer-checks \
-          -ffixed-x18 \
-          -mbranch-protection=pac-ret \
-          -mgeneral-regs-only \
-          -mcmodel=large \
-          -fsanitize=kcfi \
-          -I${KHEADERS}/include \
-          -I${KHEADERS}/arch/arm64/include \
-          -c oplus_unlock.c -o oplus_unlock.o
+        # Create Kbuild file
+        cat > kernel_src/drivers/misc/Kbuild << 'KBUILD'
+        obj-m += oplus_unlock.o
+        KBUILD
 
-        clang --target=aarch64-linux-gnu \
-          -std=gnu11 -O2 \
-          -D__KERNEL__ -DMODULE \
-          -fno-pic -fno-PIE -fno-common -fno-builtin \
-          -fasynchronous-unwind-tables \
-          -fno-delete-null-pointer-checks \
-          -ffixed-x18 \
-          -mbranch-protection=pac-ret \
-          -mgeneral-regs-only \
-          -mcmodel=large \
-          -fsanitize=kcfi \
-          -I${KHEADERS}/include \
-          -I${KHEADERS}/arch/arm64/include \
-          -nostdlib -Wl,--build-id=none -shared \
-          -o oplus_unlock.ko oplus_unlock.o
+        # Build using kernel's own build system
+        cd kernel_src
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          M=$(pwd)/drivers/misc \
+          modules -j$(nproc) 2>&1
 
-        echo "=== Build complete ==="
-        llvm-readelf -p .modinfo oplus_unlock.ko | grep -E "vermagic|filename"
+    - name: Verify module
+      run: |
+        cd kernel_src
+        echo "=== Module info ==="
+        llvm-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || \
+          aarch64-linux-gnu-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || \
+          echo "readelf failed, checking file type"
+        file drivers/misc/oplus_unlock.ko
+        ls -la drivers/misc/oplus_unlock.ko
+        
+        # Copy to workspace
+        cp drivers/misc/oplus_unlock.ko ../oplus_unlock.ko
 
     - name: Package for KernelSU
       run: |
         mkdir -p package
-        cp src/oplus_unlock.ko package/
+        cp oplus_unlock.ko package/
         cp service.sh package/
         cp module.prop package/
         cp profile.conf package/
         touch package/skip_mount
         cd package
         zip -r ../oplus_unlock-kernelsu.zip .
+        cd ..
+        echo "=== Package ==="
+        unzip -l oplus_unlock-kernelsu.zip
+        sha256sum oplus_unlock-kernelsu.zip
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: oplus_unlock-module
         path: |
-          src/oplus_unlock.ko
+          oplus_unlock.ko
           oplus_unlock-kernelsu.zip
         retention-days: 7
