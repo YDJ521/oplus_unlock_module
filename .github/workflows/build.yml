@@ -31,63 +31,29 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
-        
-        echo "=== Available defconfigs ==="
-        find arch/arm64/configs -name '*defconfig' 2>/dev/null | head -20 || true
-        
-        if [ -f arch/arm64/configs/gki_defconfig ]; then
-          make gki_defconfig
-        elif [ -f arch/arm64/configs/vendor/gki_defconfig ]; then
-          make vendor/gki_defconfig
-        else
-          make defconfig
-        fi
-        
+        make gki_defconfig || make defconfig
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare -j$(nproc)
-
-    - name: Verify kernel headers
-      working-directory: kernel_src
-      run: |
-        echo "=== Checking critical headers ==="
-        ls -la arch/arm64/include/asm/cpucaps.h 2>/dev/null || echo "cpucaps.h NOT in source"
-        find arch/arm64 -name "cpucaps.h" 2>/dev/null || echo "cpucaps.h NOT found anywhere"
-        ls include/generated/autoconf.h 2>/dev/null || echo "autoconf.h missing"
-        ls include/generated/utsrelease.h 2>/dev/null || echo "utsrelease.h missing"
-        cat include/generated/utsrelease.h 2>/dev/null || true
-        cat .config | grep -E "KPROBES|CFI|MODVERSIONS" || true
 
     - name: Build module via Kbuild
       run: |
-        # Copy source files into kernel source tree
         mkdir -p kernel_src/drivers/misc
         cp src/oplus_unlock.c kernel_src/drivers/misc/oplus_unlock.c
-        
-        # Create Kbuild file
         cat > kernel_src/drivers/misc/Kbuild << 'KBUILD'
         obj-m += oplus_unlock.o
         KBUILD
-
-        # Build using kernel's own build system
         cd kernel_src
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          KBUILD_MODPOST_WARN=1 \
           M=$(pwd)/drivers/misc \
           modules -j$(nproc) 2>&1
 
-    - name: Verify module
+    - name: Verify and package
       run: |
         cd kernel_src
-        echo "=== Module info ==="
-        llvm-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || \
-          aarch64-linux-gnu-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || \
-          echo "readelf failed, checking file type"
         file drivers/misc/oplus_unlock.ko
-        ls -la drivers/misc/oplus_unlock.ko
+        llvm-readelf -p .modinfo drivers/misc/oplus_unlock.ko 2>/dev/null || true
+        cp drivers/misc/oplus_unlock.ko .
         
-        # Copy to workspace
-        cp drivers/misc/oplus_unlock.ko ../oplus_unlock.ko
-
-    - name: Package for KernelSU
-      run: |
         mkdir -p package
         cp oplus_unlock.ko package/
         cp service.sh package/
@@ -97,8 +63,6 @@ jobs:
         cd package
         zip -r ../oplus_unlock-kernelsu.zip .
         cd ..
-        echo "=== Package ==="
-        unzip -l oplus_unlock-kernelsu.zip
         sha256sum oplus_unlock-kernelsu.zip
 
     - name: Upload artifact
