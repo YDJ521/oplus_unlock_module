@@ -32,6 +32,12 @@ jobs:
         make gki_defconfig || make defconfig
         make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare -j$(nproc)
 
+    - name: Patch vermagic to match device
+      working-directory: kernel_src
+      run: |
+        echo '#define UTS_RELEASE "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"' > include/generated/utsrelease.h
+        cat include/generated/utsrelease.h
+
     - name: Build module via Kbuild
       run: |
         mkdir -p kernel_src/drivers/misc
@@ -45,6 +51,11 @@ jobs:
           M=$(pwd)/drivers/misc \
           modules -j$(nproc) 2>&1
         cp drivers/misc/oplus_unlock.ko $GITHUB_WORKSPACE/oplus_unlock.ko
+
+    - name: Verify vermagic
+      run: |
+        strings oplus_unlock.ko | grep "6.6.89"
+        echo "Expected: 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
 
     - name: Package for KernelSU
       run: |
